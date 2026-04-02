@@ -129,7 +129,7 @@ export const handler = async function(event) {
       { key: 'price_per_window', label: 'Price Per Window', dataType: 'TEXT'      },
       { key: 'window_count',     label: 'Window Count',     dataType: 'NUMERICAL' },
       { key: 'year_built',       label: 'Year Built',       dataType: 'NUMERICAL' },
-      { key: 'sqft',             label: 'Square Footage',   dataType: 'NUMERICAL' },
+      { key: 'sqft',             label: 'Sqft',             dataType: 'NUMERICAL' },
       { key: 'stories',          label: 'Stories',          dataType: 'NUMERICAL' },
       { key: 'install_type',     label: 'Install Type',     dataType: 'TEXT'      },
       { key: 'glass_package',    label: 'Glass Package',    dataType: 'TEXT'      },
@@ -203,9 +203,22 @@ export const handler = async function(event) {
   result.tag_name = TAG_NAME;
 
   await step('Tag', async () => {
-    const r = await ghl('POST', `/locations/${locationId}/tags`, { name: TAG_NAME });
-    result.tag_id = r.tag?.id || r.id || null;
-    result.log.push(`  · ID: ${result.tag_id}`);
+    try {
+      const r = await ghl('POST', `/locations/${locationId}/tags`, { name: TAG_NAME });
+      result.tag_id = r.tag?.id || r.id || null;
+      result.log.push(`  · Created ID: ${result.tag_id}`);
+    } catch(e) {
+      // Tag already exists — fetch it
+      if (e.message.includes('already exist')) {
+        const list = await ghl('GET', `/locations/${locationId}/tags?limit=100`);
+        const tags = list.tags || list.data || [];
+        const found = tags.find(t => t.name === TAG_NAME);
+        result.tag_id = found?.id || null;
+        result.log.push(`  · Already exists, ID: ${result.tag_id}`);
+      } else {
+        throw e; // re-throw real errors
+      }
+    }
   });
 
   // ════════════════════════════════════════════════════════
@@ -373,10 +386,10 @@ export const handler = async function(event) {
   // SUMMARY
   // ════════════════════════════════════════════════════════
   const failed  = result.steps_failed.length;
-  const total   = 9;
-  const success = total - failed;
+  const total   = result.log.filter(l => l.startsWith('── ')).length - 1; // subtract "── Complete"
+  const success = Math.max(0, total - failed);
   result.log.push(`── Complete: ${success}/${total} steps succeeded`);
-  if (failed > 0) result.log.push(`── Failed steps: ${result.steps_failed.join(', ')}`);
+  if (failed > 0) result.log.push(`── Needs attention: ${result.steps_failed.join(', ')}`);
 
   return respond(result);
 };
