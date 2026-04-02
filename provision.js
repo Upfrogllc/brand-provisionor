@@ -384,5 +384,3 @@ export const handler = async function(event) {
 
   return respond(result, result.ok ? 200 : 500);
 }
-
-
