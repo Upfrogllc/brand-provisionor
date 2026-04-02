@@ -11,7 +11,11 @@
  * Returns: non-sensitive config JSON (IDs only, no keys)
  */
 
-export default async function handler(req) {
+export const handler = async function(event) {
+  const req = {
+    method:  event.httpMethod,
+    json:    () => Promise.resolve(JSON.parse(event.body || '{}')),
+  };
   // ── CORS headers ──────────────────────────────────────────
   const headers = {
     'Access-Control-Allow-Origin':  '*',
@@ -20,11 +24,17 @@ export default async function handler(req) {
     'Content-Type': 'application/json',
   };
 
+  const respond = (body, status = 200) => ({
+    statusCode: status,
+    headers,
+    body: JSON.stringify(body),
+  });
+
   if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers });
+    return { statusCode: 204, headers, body: '' };
   }
   if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers });
+    return respond({ error: 'Method not allowed' }, 405);
   }
 
   // ── Parse + validate body ─────────────────────────────────
@@ -32,7 +42,7 @@ export default async function handler(req) {
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), { status: 400, headers });
+    return respond({ error: 'Invalid JSON body' }, 400);
   }
 
   const { secret, locationId, apiKey, brand = {} } = body;
@@ -40,14 +50,11 @@ export default async function handler(req) {
   // Gate — check secret matches env var
   const UPFROG_SECRET = process.env.UPFROG_SECRET;
   if (!UPFROG_SECRET || secret !== UPFROG_SECRET) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers });
+    return respond({ error: 'Unauthorized' }, 401);
   }
 
   if (!locationId || !apiKey) {
-    return new Response(
-      JSON.stringify({ error: 'locationId and apiKey are required' }),
-      { status: 400, headers }
-    );
+    return respond({ error: 'locationId and apiKey are required' }, 400);
   }
 
   // ── Destructure brand config ──────────────────────────────
@@ -375,7 +382,5 @@ export default async function handler(req) {
     result.log.push(`FATAL: ${e.message}`);
   }
 
-  return new Response(JSON.stringify(result), { status: result.ok ? 200 : 500, headers });
+  return respond(result, result.ok ? 200 : 500);
 }
-
-export const config = { path: '/api/provision' };
