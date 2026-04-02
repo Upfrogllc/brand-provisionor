@@ -129,7 +129,7 @@ export const handler = async function(event) {
       { key: 'price_per_window', label: 'Price Per Window', dataType: 'TEXT'      },
       { key: 'window_count',     label: 'Window Count',     dataType: 'NUMERICAL' },
       { key: 'year_built',       label: 'Year Built',       dataType: 'NUMERICAL' },
-      { key: 'sqft',             label: 'Sqft',             dataType: 'NUMERICAL' },
+      { key: 'sqft',             label: 'Sqft',             dataType: 'NUMERICAL', systemField: 'contact.square_footage' },
       { key: 'stories',          label: 'Stories',          dataType: 'NUMERICAL' },
       { key: 'install_type',     label: 'Install Type',     dataType: 'TEXT'      },
       { key: 'glass_package',    label: 'Glass Package',    dataType: 'TEXT'      },
@@ -154,6 +154,13 @@ export const handler = async function(event) {
 
     // Create each field independently
     for (const f of FIELDS) {
+      // System fields already exist in GHL — find by fieldKey
+      if (f.systemField) {
+        const sys = existing.find(e => e.fieldKey === f.systemField || e.fieldKey?.includes(f.key));
+        result.custom_fields[f.key] = sys?.id || null;
+        result.log.push(`  · ${f.label}: system field (${result.custom_fields[f.key] || 'not found'})`);
+        continue;
+      }
       const found = existing.find(e => e.name === f.label || e.fieldKey?.includes(f.key));
       if (found) {
         result.custom_fields[f.key] = found.id;
