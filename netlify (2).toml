@@ -5,15 +5,12 @@
 [functions]
   node_bundler = "esbuild"
 
-# Redirect all non-asset requests to index.html (SPA)
+[[redirects]]
+  from   = "/api/*"
+  to     = "/.netlify/functions/:splat"
+  status = 200
+
 [[redirects]]
   from   = "/*"
   to     = "/index.html"
   status = 200
-
-# Environment variable docs (actual values set in Netlify UI → Site settings → Env vars)
-# Never put real keys here — this file is committed to git
-#
-# Required env vars to set in Netlify dashboard:
-#   GHL_AGENCY_API_KEY   — your GHL agency-level API key
-#   UPFROG_SECRET        — a random string you generate, used to auth the dashboard
