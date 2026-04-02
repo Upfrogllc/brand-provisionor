@@ -295,7 +295,7 @@ async function runProvision() {
   addLog('── Starting provisioner...');
 
   try {
-    const res = await fetch('/api/provision', {
+    const res = await fetch('/.netlify/functions/provision', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
