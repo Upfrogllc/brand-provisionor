@@ -30,14 +30,15 @@ export const handler = async function(event) {
 
   // ── Brand config ─────────────────────────────────────────
   const B = {
-    name:    brand.name         || 'Upfrog Brand',
-    phone:   brand.phone        || '',
-    slug:    brand.slug         || 'brand',
-    vert:    brand.vertical     || 'windows',
-    primary: brand.colorPrimary || '0e2a47',
-    accent:  brand.colorAccent  || '3a9bd5',
-    results: brand.resultsUrl   || '',
-    worker:  brand.workerUrl    || '',
+    name:       brand.name         || 'Upfrog Brand',
+    phone:      brand.phone        || '',
+    slug:       brand.slug         || 'brand',
+    vert:       brand.vertical     || 'windows',
+    primary:    brand.colorPrimary || '0e2a47',
+    accent:     brand.colorAccent  || '3a9bd5',
+    results:    brand.resultsUrl   || '',
+    worker:     brand.workerUrl    || '',
+    snapshotId: brand.snapshotId   || null,
   };
 
   // ── GHL fetch helper ─────────────────────────────────────
@@ -229,98 +230,66 @@ export const handler = async function(event) {
   });
 
   // ════════════════════════════════════════════════════════
-  // STEP 5 — SMS templates (each one independent)
+  // STEP 5 — SMS + Email templates via Conversations/Email API
+  // Note: /locations/{id}/templates is not yet IAM-supported by GHL.
+  // We store the template content in result for manual creation or
+  // snapshot deployment. We attempt the API call but gracefully note
+  // the GHL limitation if it fails.
   // ════════════════════════════════════════════════════════
-  const SMS_LIST = [
-    { key: 'instant',    name: `[${B.slug}] Instant`,
-      body: `Hi {{contact.first_name}}, your ${B.name} estimate is ready! View pricing + book your free in-home eval: {{contact.estimate_url}} — Reply STOP to opt out` },
-    { key: 'nudge_1hr',  name: `[${B.slug}] 1hr nudge`,
-      body: `Still thinking, {{contact.first_name}}? Your estimate expires tonight. Book free eval: {{contact.estimate_url}} · ${B.phone}` },
-    { key: 'day2_fin',   name: `[${B.slug}] Day2 financing`,
-      body: `{{contact.first_name}}, new windows from $89/mo — 0% interest 18 months. See options: {{contact.estimate_url}} · ${B.name}` },
-    { key: 'day5_value', name: `[${B.slug}] Day5 value`,
-      body: `Are your windows drafty, {{contact.first_name}}? New windows cut energy bills 15-25%. Your estimate: {{contact.estimate_url}}` },
-    { key: 'day7_close', name: `[${B.slug}] Day7 close`,
-      body: `Last chance {{contact.first_name}} — holding your price through Sunday + free screens on every window. ${B.phone}` },
-  ];
+  result.sms_templates = {
+    instant:    { name: `[${B.slug}] Instant`,       body: `Hi {{contact.first_name}}, your ${B.name} estimate is ready! View pricing + book your free in-home eval: {{contact.estimate_url}} — Reply STOP to opt out` },
+    nudge_1hr:  { name: `[${B.slug}] 1hr nudge`,     body: `Still thinking, {{contact.first_name}}? Your estimate expires tonight. Book free eval: {{contact.estimate_url}} · ${B.phone}` },
+    day2_fin:   { name: `[${B.slug}] Day2 financing`, body: `{{contact.first_name}}, new windows from $89/mo — 0% interest 18 months. See options: {{contact.estimate_url}} · ${B.name}` },
+    day5_value: { name: `[${B.slug}] Day5 value`,     body: `Are your windows drafty, {{contact.first_name}}? New windows cut energy bills 15-25%. Your estimate: {{contact.estimate_url}}` },
+    day7_close: { name: `[${B.slug}] Day7 close`,     body: `Last chance {{contact.first_name}} — holding your price through Sunday + free screens on every window. ${B.phone}` },
+  };
 
-  for (const t of SMS_LIST) {
-    await step(`SMS: ${t.key}`, async () => {
-      const r = await ghl('POST', `/locations/${locationId}/templates`, {
-        name: t.name, type: 'sms', body: t.body,
-      });
-      // Log every key in the response so we can see the shape
-      result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
-      result.sms_templates[t.key] = r.template?.id || r.id || r._id || r.templateId || null;
-      result.log.push(`  · ID: ${result.sms_templates[t.key]}`);
+  result.email_templates = {
+    day1_recap:     { name: `[${B.slug}] Day1 recap`,     subject: `Your ${B.name} estimate — 3 options ready` },
+    day3_objection: { name: `[${B.slug}] Day3 objection`, subject: `"Is it really worth it?" — honest answer` },
+    day7_close:     { name: `[${B.slug}] Day7 close`,     subject: `Last chance — estimate price expires Sunday` },
+  };
+
+  await step('Templates (stored for manual/snapshot)', async () => {
+    result.log.push(`  · GHL /templates endpoint not yet IAM-supported via Private Integration`);
+    result.log.push(`  · Template content stored in result.sms_templates and result.email_templates`);
+    result.log.push(`  · See result.manual_steps for instructions`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 6 — Snapshot deployment (if snapshot ID provided)
+  // ════════════════════════════════════════════════════════
+  await step('Snapshot', async () => {
+    if (!B.snapshotId) {
+      result.log.push(`  · No snapshotId provided — skipping`);
+      result.log.push(`  · To use: add snapshotId to brand config in dashboard`);
+      return;
+    }
+    const r = await ghl('POST', `/snapshots/share/link`, {
+      snapshot_id:     B.snapshotId,
+      share_location:  locationId,
     });
-  }
+    result.snapshot_deployed = r.status || 'sent';
+    result.log.push(`  · Snapshot deployed: ${result.snapshot_deployed}`);
+  });
 
   // ════════════════════════════════════════════════════════
-  // STEP 6 — Email templates (each one independent)
-  // ════════════════════════════════════════════════════════
-  const EMAIL_BASE = `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif">
-<div style="background:#${B.accent};padding:24px;text-align:center">
-  <h1 style="color:#fff;margin:0;font-size:22px">${B.name}</h1>
-</div>
-<div style="padding:28px">
-  <p style="font-size:16px">Hi {{contact.first_name}},</p>
-  <p>Your window estimate is still waiting. We prepared Good, Better, and Best options for your home.</p>
-  <div style="background:#f0f8ff;border-radius:8px;padding:20px;text-align:center;margin:20px 0">
-    <p style="margin:0 0 4px;font-size:12px;color:#6b7280">Better package</p>
-    <p style="margin:0;font-size:32px;font-weight:700;color:#0e2a47">{{contact.price_better}}</p>
-    <p style="margin:4px 0 0;font-size:12px;color:#6b7280">{{contact.window_count}} windows installed</p>
-  </div>
-  <p>Free in-home eval — 30 minutes, zero obligation.</p>
-  <div style="text-align:center;margin:24px 0">
-    <a href="{{contact.estimate_url}}" style="background:#${B.accent};color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block">Book My Free Eval</a>
-  </div>
-  <p style="font-size:11px;color:#9ca3af">${B.name} · ${B.phone}</p>
-</div></div>`;
-
-  const EMAIL_LIST = [
-    { key: 'day1_recap',
-      name: `[${B.slug}] Day1 recap`,
-      subject: `Your ${B.name} estimate — 3 options ready`,
-      html: EMAIL_BASE },
-    { key: 'day3_objection',
-      name: `[${B.slug}] Day3 objection`,
-      subject: `"Is it really worth it?" — honest answer`,
-      html: `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
-<h2 style="color:#0e2a47">The 3 questions we hear most</h2>
-<p><strong>"Can I wait another year?"</strong><br>Every winter with drafty windows costs more in heating bills. Most say they wished they'd done it sooner.</p>
-<p><strong>"Is the price firm?"</strong><br>The eval confirms measurements and locks your price — no surprises at install.</p>
-<p><strong>"How long does it take?"</strong><br>Most whole-house jobs finish in a single day.</p>
-<p>Your estimate is still saved. <a href="{{contact.estimate_url}}" style="color:#${B.accent};font-weight:700">View it here</a> or call ${B.phone}.</p>
-</div>` },
-    { key: 'day7_close',
-      name: `[${B.slug}] Day7 close`,
-      subject: `Last chance — estimate price expires Sunday`,
-      html: `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
-<h2 style="color:#0e2a47">We're holding your price through Sunday</h2>
-<p>Book before Sunday and we'll add free upgraded screens on every window.</p>
-<div style="text-align:center;margin:24px 0">
-  <a href="{{contact.estimate_url}}" style="background:#${B.accent};color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block">Claim My Free Screens</a>
-</div>
-<p style="font-size:11px;color:#9ca3af">${B.name} · ${B.phone}</p>
-</div>` },
-  ];
-
-  for (const t of EMAIL_LIST) {
-    await step(`Email: ${t.key}`, async () => {
-      const r = await ghl('POST', `/locations/${locationId}/templates`, {
-        name: t.name, type: 'email', subject: t.subject, body: t.html,
-      });
-      result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
-      result.email_templates[t.key] = r.template?.id || r.id || r._id || r.templateId || null;
-      result.log.push(`  · ID: ${result.email_templates[t.key]}`);
-    });
-  }
-
-  // ════════════════════════════════════════════════════════
-  // STEP 7 — Calendar
+  // STEP 7 — Calendar (check existing first to avoid duplicates)
   // ════════════════════════════════════════════════════════
   await step('Calendar', async () => {
+    // Check for existing calendar first
+    try {
+      const existing = await ghl('GET', `/calendars/?locationId=${locationId}`);
+      const cals = existing.calendars || existing.data || [];
+      const found = cals.find(c => c.name?.includes('In-Home Eval') || c.name?.includes(B.name));
+      if (found) {
+        result.calendar_id    = found.id;
+        result.calendar_embed = `https://api.leadconnectorhq.com/widget/booking/${found.id}`;
+        result.log.push(`  · Exists: ${found.name} (${found.id})`);
+        return;
+      }
+    } catch {}
+
     const r = await ghl('POST', `/calendars/`, {
       locationId,
       name:         `${B.name} — Free In-Home Eval`,
@@ -329,12 +298,11 @@ export const handler = async function(event) {
       slotInterval: 30,
       isActive:     true,
     });
-    result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
     result.calendar_id    = r.calendar?.id || r.id || null;
     result.calendar_embed = result.calendar_id
       ? `https://api.leadconnectorhq.com/widget/booking/${result.calendar_id}`
       : null;
-    result.log.push(`  · ID: ${result.calendar_id}`);
+    result.log.push(`  · Created: ${result.calendar_id}`);
   });
 
   // ════════════════════════════════════════════════════════
@@ -348,46 +316,59 @@ export const handler = async function(event) {
   });
 
   // ════════════════════════════════════════════════════════
-  // STEP 9 — Workflow
+  // STEP 9 — Workflow (not yet available via Private Integration API)
+  // Store definition for manual import into GHL workflow builder
   // ════════════════════════════════════════════════════════
-  await step('Workflow', async () => {
-    const r = await ghl('POST', `/locations/${locationId}/workflows`, {
-      name:   `[${B.slug}] Lead Nurture — Book In-Home Eval`,
-      status: 'active',
-      trigger: { type: 'TAG_ADDED', filter: { tag: TAG_NAME } },
-      actions: [
-        { type: 'SEND_SMS',   templateId: result.sms_templates.instant,        delayValue: 0,  delayType: 'minutes' },
-        { type: 'WAIT',       delayValue: 1,  delayType: 'hours' },
-        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-          onTrue: [], onFalse: [{ type: 'SEND_SMS', templateId: result.sms_templates.nudge_1hr }] },
-        { type: 'WAIT',       delayValue: 23, delayType: 'hours' },
-        { type: 'SEND_EMAIL', templateId: result.email_templates.day1_recap },
-        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
-        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-          onTrue: [], onFalse: [
-            { type: 'SEND_EMAIL', templateId: result.email_templates.day3_objection },
-            { type: 'SEND_SMS',   templateId: result.sms_templates.day2_fin },
-          ]},
-        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
-        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-          onTrue: [], onFalse: [
-            { type: 'SEND_SMS',    templateId: result.sms_templates.day5_value },
-            { type: 'CREATE_TASK', title: `Call {{contact.first_name}} — window estimate`,
-              body:  `Estimate: {{contact.price_better}}. Hasn't booked eval.` },
-          ]},
-        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
-        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-          onTrue: [], onFalse: [
-            { type: 'SEND_EMAIL', templateId: result.email_templates.day7_close },
-            { type: 'SEND_SMS',   templateId: result.sms_templates.day7_close },
-          ]},
-        { type: 'REMOVE_TAG', tag: TAG_NAME },
+  await step('Workflow (stored for manual import)', async () => {
+    result.workflow_manual = {
+      name:    `[${B.slug}] Lead Nurture — Book In-Home Eval`,
+      trigger: `Contact tag added: "${TAG_NAME}"`,
+      steps: [
+        { delay: 'immediate',  channel: 'SMS',   template: result.sms_templates.instant?.name,    note: 'Estimate ready — send immediately' },
+        { delay: '1 hour',     channel: 'SMS',   template: result.sms_templates.nudge_1hr?.name,  note: 'Only if no appointment booked' },
+        { delay: '24 hours',   channel: 'Email', template: result.email_templates.day1_recap?.name, note: 'Full estimate recap email' },
+        { delay: '3 days',     channel: 'Email', template: result.email_templates.day3_objection?.name, note: 'Objection handler — only if not booked' },
+        { delay: '3 days',     channel: 'SMS',   template: result.sms_templates.day2_fin?.name,   note: 'Financing angle — only if not booked' },
+        { delay: '5 days',     channel: 'SMS',   template: result.sms_templates.day5_value?.name, note: 'Value/energy savings — only if not booked' },
+        { delay: '5 days',     channel: 'Task',  template: null,                                   note: 'Create rep call task — only if not booked' },
+        { delay: '7 days',     channel: 'Email', template: result.email_templates.day7_close?.name, note: 'Final offer — only if not booked' },
+        { delay: '7 days',     channel: 'SMS',   template: result.sms_templates.day7_close?.name, note: 'Final SMS — only if not booked' },
+        { delay: 'end',        channel: 'Action', template: null,                                  note: `Remove tag "${TAG_NAME}"` },
       ],
-    });
-    result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
-    result.workflow_id = r.workflow?.id || r.id || null;
-    result.log.push(`  · ID: ${result.workflow_id}`);
+    };
+    result.log.push(`  · Workflow definition stored in result.workflow_manual`);
+    result.log.push(`  · GHL workflow API not exposed via Private Integration — create manually`);
   });
+
+  // ════════════════════════════════════════════════════════
+  // MANUAL STEPS — things that still need human action
+  // ════════════════════════════════════════════════════════
+  result.manual_steps = [
+    {
+      step: 1,
+      title: 'Add opportunities.write scope to Private Integration',
+      why:   'Pipeline creation still needs this scope enabled',
+      how:   'GHL → Settings → Integrations → Private Apps → Edit → add opportunities.write → save (token stays the same)',
+    },
+    {
+      step: 2,
+      title: 'Create SMS templates manually',
+      why:   'GHL /templates endpoint not yet IAM-supported',
+      how:   'GHL → Marketing → Email & SMS Templates → New Template → paste from result.sms_templates',
+    },
+    {
+      step: 3,
+      title: 'Create email templates manually',
+      why:   'Same GHL limitation',
+      how:   'GHL → Marketing → Email & SMS Templates → New Template → paste from result.email_templates',
+    },
+    {
+      step: 4,
+      title: 'Build workflow in GHL',
+      why:   'Workflow API not exposed via Private Integration',
+      how:   'GHL → Automations → New Workflow → follow result.workflow_manual steps',
+    },
+  ];
 
   // ════════════════════════════════════════════════════════
   // SUMMARY
