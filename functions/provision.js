@@ -127,10 +127,10 @@ export const handler = async function(event) {
     // ── 2. Custom fields ────────────────────────────────────
     log('Creating custom fields...');
     const FIELDS = [
-      { key: 'price_good',       label: 'Price — Good tier',       dataType: 'CURRENCY'  },
-      { key: 'price_better',     label: 'Price — Better tier',     dataType: 'CURRENCY'  },
-      { key: 'price_best',       label: 'Price — Best tier',       dataType: 'CURRENCY'  },
-      { key: 'price_per_window', label: 'Price — Per window',      dataType: 'CURRENCY'  },
+      { key: 'price_good',       label: 'Price — Good tier',       dataType: 'TEXT'  },
+      { key: 'price_better',     label: 'Price — Better tier',     dataType: 'TEXT'  },
+      { key: 'price_best',       label: 'Price — Best tier',       dataType: 'TEXT'  },
+      { key: 'price_per_window', label: 'Price — Per window',      dataType: 'TEXT'  },
       { key: 'window_count',     label: 'Window count',            dataType: 'NUMERICAL' },
       { key: 'year_built',       label: 'Year built',              dataType: 'NUMERICAL' },
       { key: 'sqft',             label: 'Square footage',          dataType: 'NUMERICAL' },
@@ -139,7 +139,7 @@ export const handler = async function(event) {
       { key: 'glass_package',    label: 'Glass package',           dataType: 'TEXT'      },
       { key: 'window_types',     label: 'Window types selected',   dataType: 'TEXT'      },
       { key: 'addon_list',       label: 'Add-ons selected',        dataType: 'TEXT'      },
-      { key: 'addon_total',      label: 'Add-on total',            dataType: 'CURRENCY'  },
+      { key: 'addon_total',      label: 'Add-on total',            dataType: 'TEXT'      },
       { key: 'lead_paint_flag',  label: 'Lead paint flag',         dataType: 'TEXT'      },
       { key: 'bay_bow_detected', label: 'Bay/bow detected',        dataType: 'TEXT'      },
       { key: 'lead_source',      label: 'Lead source',             dataType: 'TEXT'      },
@@ -185,7 +185,8 @@ export const handler = async function(event) {
       } else {
         const stages = ['New Lead','Estimate Viewed','Eval Booked','Eval Completed','Closed Won','Closed Lost'];
         const pr = await ghl('POST', `/opportunities/pipelines`, {
-          locationId, name: PIPELINE_NAME,
+          locationId,
+          name: PIPELINE_NAME,
           stages: stages.map((name, i) => ({ name, position: i })),
         });
         result.pipeline_id = pr.pipeline?.id || pr.id;
@@ -218,8 +219,12 @@ export const handler = async function(event) {
     for (const t of SMS) {
       try {
         const r = await ghl('POST', `/locations/${locationId}/templates`, { name: t.name, type: 'sms', body: t.body });
-        result.sms_templates[t.key] = r.template?.id || r.id;
-      } catch { result.sms_templates[t.key] = null; }
+        result.sms_templates[t.key] = r.template?.id || r.id || r._id || Object.values(r).find(v => typeof v === 'string' && v.length > 10) || null;
+        log(`✓ SMS: ${t.name} → ${result.sms_templates[t.key]}`);
+      } catch(e) { 
+        log(`⚠ SMS "${t.name}": ${e.message}`);
+        result.sms_templates[t.key] = null; 
+      }
     }
     log(`✓ ${Object.keys(result.sms_templates).length} SMS templates`);
 
@@ -298,8 +303,12 @@ export const handler = async function(event) {
         const r = await ghl('POST', `/locations/${locationId}/templates`, {
           name: t.name, type: 'email', subject: t.subject, body: t.html,
         });
-        result.email_templates[t.key] = r.template?.id || r.id;
-      } catch { result.email_templates[t.key] = null; }
+        result.email_templates[t.key] = r.template?.id || r.id || r._id || Object.values(r).find(v => typeof v === 'string' && v.length > 10) || null;
+        log(`✓ Email: ${t.name} → ${result.email_templates[t.key]}`);
+      } catch(e) { 
+        log(`⚠ Email "${t.name}": ${e.message}`);
+        result.email_templates[t.key] = null; 
+      }
     }
     log(`✓ ${Object.keys(result.email_templates).length} email templates`);
 
@@ -333,7 +342,7 @@ export const handler = async function(event) {
     log('Creating follow-up workflow...');
     const wfName = `[${BRAND_SLUG}] Lead Nurture — Book In-Home Eval`;
     try {
-      const wfr = await ghl('POST', `/workflows/`, {
+      const wfr = await ghl('POST', `/locations/${locationId}/workflows`, {
         locationId,
         name:   wfName,
         status: 'active',
