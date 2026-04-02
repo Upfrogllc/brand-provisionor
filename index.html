@@ -66,9 +66,30 @@ h1{font-family:'DM Serif Display',serif;font-size:26px;color:var(--navy);margin-
 .result-label{font-size:10px;font-weight:500;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
 .result-val{font-size:12px;font-weight:500;color:var(--navy);word-break:break-all}
 .result-val.mono{font-family:monospace;font-size:11px}
-.copy-btn{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:4px 10px;border-radius:5px;border:1px solid var(--border);background:var(--white);cursor:pointer;color:var(--muted);margin-top:6px}
-.copy-btn:hover{color:var(--sky);border-color:var(--sky)}
-textarea.json-out{width:100%;height:160px;font-family:monospace;font-size:10px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--ink);resize:vertical;margin-top:8px}
+.tab-btn{padding:8px 14px;font-size:12px;font-weight:500;font-family:'DM Sans',sans-serif;background:none;border:none;border-bottom:2px solid transparent;cursor:pointer;color:var(--muted);transition:all .15s;margin-bottom:-1px}
+.tab-btn:hover{color:var(--navy)}
+.tab-btn.active{color:var(--sky);border-bottom-color:var(--sky)}
+.tmpl-card{background:var(--bg);border:0.5px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:10px}
+.tmpl-name{font-size:12px;font-weight:600;color:var(--navy);margin-bottom:2px}
+.tmpl-type{font-size:10px;font-weight:500;padding:1px 6px;border-radius:3px;display:inline-block;margin-bottom:6px}
+.tmpl-sms{background:var(--ice);color:var(--sky)}
+.tmpl-email{background:#f0fdf4;color:#166534}
+.tmpl-body{font-size:11px;color:var(--ink);background:var(--white);border:0.5px solid var(--border);border-radius:6px;padding:8px 10px;line-height:1.5;white-space:pre-wrap;word-break:break-word;margin-bottom:6px}
+.wf-step{display:flex;gap:12px;padding:10px 0;border-bottom:0.5px solid var(--border);align-items:flex-start}
+.wf-step:last-child{border-bottom:none}
+.wf-num{width:22px;height:22px;border-radius:50%;background:var(--ice);color:var(--sky);font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.wf-delay{font-size:11px;font-weight:500;color:var(--amber);min-width:80px;flex-shrink:0;margin-top:2px}
+.wf-channel{font-size:11px;font-weight:500;padding:1px 6px;border-radius:3px;margin-right:6px;flex-shrink:0}
+.ch-sms{background:var(--ice);color:var(--sky)}
+.ch-email{background:#f0fdf4;color:#166534}
+.ch-task{background:#fef3c7;color:#92400e}
+.ch-action{background:#f3f4f6;color:#374151}
+.wf-detail{font-size:12px;color:var(--ink);line-height:1.4}
+.wf-note{font-size:11px;color:var(--muted);margin-top:2px}
+.manual-item{display:flex;gap:10px;padding:10px 12px;background:#fffbeb;border:0.5px solid #fde68a;border-radius:8px;margin-bottom:6px;align-items:flex-start}
+.manual-num{width:20px;height:20px;border-radius:50%;background:#fde68a;color:#92400e;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.manual-title{font-size:12px;font-weight:600;color:#92400e;margin-bottom:2px}
+.manual-how{font-size:11px;color:#b45309;line-height:1.4}
 
 .step-badges{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:20px}
 .badge{font-size:11px;font-weight:500;padding:3px 10px;border-radius:20px;background:var(--ice);color:var(--sky)}
@@ -186,6 +207,16 @@ textarea.json-out{width:100%;height:160px;font-family:monospace;font-size:10px;p
       <label>Upfrog Worker URL</label>
       <input type="url" id="workerUrl" value="https://upfrog-proxy.shiny-poetry-341c.workers.dev" placeholder="https://...">
     </div>
+
+    <div style="height:1px;background:var(--border);margin:16px 0"></div>
+
+    <div class="field">
+      <label>GHL Snapshot ID
+        <span style="font-size:10px;font-weight:400;color:var(--sky);background:var(--ice);padding:1px 6px;border-radius:3px;margin-left:6px">Optional</span>
+      </label>
+      <input type="text" id="snapshotId" placeholder="Leave blank if you don't have one yet">
+      <div class="field-hint">If you've built a GHL snapshot with templates + workflow, paste its ID here. The provisioner will deploy it to the new location automatically, replacing the manual template step. To create: GHL → Settings → Snapshots → Create → copy ID.</div>
+    </div>
   </div>
 
   <button class="btn" id="provision-btn" onclick="runProvision()">
@@ -205,15 +236,52 @@ textarea.json-out{width:100%;height:160px;font-family:monospace;font-size:10px;p
         Provisioning complete
       </div>
       <div class="result-grid" id="result-grid"></div>
-      <div style="font-size:12px;font-weight:500;color:var(--muted);margin-bottom:6px">Full config JSON — paste this back to Claude or save it:</div>
-      <textarea class="json-out" id="json-out" readonly></textarea>
-      <button class="copy-btn" onclick="copyJson()">
-        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 8V2h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-        Copy JSON
-      </button>
+
+      <!-- MANUAL STEPS (shown if anything needs manual action) -->
+      <div id="manual-steps-wrap" style="display:none;margin-top:16px">
+        <div style="font-size:12px;font-weight:600;color:var(--amber);margin-bottom:8px;display:flex;align-items:center;gap:6px">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="6" stroke="#d97706" stroke-width="1.3"/><path d="M7 4v3.5" stroke="#d97706" stroke-width="1.3" stroke-linecap="round"/><circle cx="7" cy="10.5" r=".7" fill="#d97706"/></svg>
+          Manual steps needed
+        </div>
+        <div id="manual-steps-list"></div>
+      </div>
+
+      <!-- TABS: JSON / Templates / Workflow -->
+      <div style="margin-top:16px">
+        <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <button class="tab-btn active" id="tab-json"      onclick="showTab('json')">Config JSON</button>
+          <button class="tab-btn"        id="tab-templates" onclick="showTab('templates')">SMS + Email templates</button>
+          <button class="tab-btn"        id="tab-workflow"  onclick="showTab('workflow')">Workflow steps</button>
+        </div>
+
+        <!-- JSON TAB -->
+        <div id="panel-json">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px">Paste this back to Claude to wire up the sizer page, or save it.</div>
+          <textarea class="json-out" id="json-out" readonly></textarea>
+          <button class="copy-btn" onclick="copyContent('json-out')">
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 8V2h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            Copy JSON
+          </button>
+        </div>
+
+        <!-- TEMPLATES TAB -->
+        <div id="panel-templates" style="display:none">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+            Go to <strong>GHL → Marketing → Email &amp; SMS Templates → New Template</strong> and create each one below.
+          </div>
+          <div id="template-list"></div>
+        </div>
+
+        <!-- WORKFLOW TAB -->
+        <div id="panel-workflow" style="display:none">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">
+            Go to <strong>GHL → Automations → New Workflow</strong>. Set trigger to <em>Contact tag added: "Window Lead"</em>. Then add each step below in order.
+          </div>
+          <div id="workflow-steps-list"></div>
+        </div>
+      </div>
     </div>
   </div>
-</div>
 
 <script>
 function syncColor(which) {
@@ -227,54 +295,136 @@ function syncPicker(which) {
   }
 }
 
-function addLog(msg, type = '') {
-  const wrap = document.getElementById('log-wrap');
+// ── Tabs ──────────────────────────────────────────────────
+function showTab(name) {
+  ['json','templates','workflow'].forEach(t => {
+    document.getElementById(`panel-${t}`).style.display  = t === name ? 'block' : 'none';
+    document.getElementById(`tab-${t}`).classList.toggle('active', t === name);
+  });
+}
+
+// ── Log ───────────────────────────────────────────────────
+function addLog(msg) {
+  const wrap  = document.getElementById('log-wrap');
   const lines = document.getElementById('log-lines');
   wrap.classList.add('show');
   const line = document.createElement('div');
-  line.className = 'log-line' + (type ? ' ' + type : '');
-  // Classify by prefix
-  if (msg.startsWith('✓')) line.className = 'log-line ok';
-  else if (msg.startsWith('⚠')) line.className = 'log-line warn';
-  else if (msg.startsWith('FATAL') || msg.startsWith('ERROR')) line.className = 'log-line err';
-  else if (msg.startsWith('──')) line.className = 'log-line step';
+  if      (msg.startsWith('✓'))                        line.className = 'log-line ok';
+  else if (msg.startsWith('⚠'))                        line.className = 'log-line warn';
+  else if (msg.startsWith('FATAL')||msg.startsWith('ERROR')) line.className = 'log-line err';
+  else if (msg.startsWith('──'))                        line.className = 'log-line step';
+  else                                                  line.className = 'log-line';
   line.textContent = msg;
   lines.appendChild(line);
   wrap.scrollTop = wrap.scrollHeight;
 }
 
-function showResult(data) {
-  const grid = document.getElementById('result-grid');
-  const items = [
-    ['Location',        data.location_name || data.location_id],
-    ['Brand',           data.brand_name],
-    ['Vertical',        data.brand_vertical],
-    ['Webhook URL',     data.webhook_url],
-    ['Calendar embed',  data.calendar_embed],
-    ['Pipeline',        data.pipeline_id],
-    ['Workflow',        data.workflow_id || 'see JSON'],
-    ['Custom fields',   Object.values(data.custom_fields).filter(Boolean).length + ' created'],
-  ];
-  grid.innerHTML = items.map(([label, val]) => `
-    <div class="result-item">
-      <div class="result-label">${label}</div>
-      <div class="result-val mono">${val || '—'}</div>
-    </div>
-  `).join('');
+// ── Copy helper ───────────────────────────────────────────
+function copyContent(id) {
+  const el = document.getElementById(id);
+  el.select?.() || window.getSelection()?.selectAllChildren(el);
+  document.execCommand('copy');
+  const btn = event.target.closest('button');
+  const orig = btn.textContent;
+  btn.textContent = '✓ Copied';
+  setTimeout(() => btn.textContent = orig, 2000);
+}
+function copyText(text) {
+  navigator.clipboard?.writeText(text).catch(() => {});
+  const btn = event.target.closest('button');
+  const orig = btn.textContent;
+  btn.textContent = '✓ Copied';
+  setTimeout(() => btn.textContent = orig, 2000);
+}
 
-  document.getElementById('json-out').value = JSON.stringify(data, null, 2);
+// ── Show result ───────────────────────────────────────────
+function showResult(data) {
+  // Summary grid
+  const grid  = document.getElementById('result-grid');
+  const items = [
+    ['Location',       data.location_name || data.location_id],
+    ['Brand',          data.brand_name],
+    ['Vertical',       data.brand_vertical],
+    ['Webhook URL',    data.webhook_url],
+    ['Calendar embed', data.calendar_embed],
+    ['Pipeline',       data.pipeline_id || (data.steps_failed?.includes('Pipeline') ? '⚠ needs scope' : '—')],
+    ['Snapshot',       data.snapshot_deployed || (data.brand_slug ? 'not used' : '—')],
+    ['Custom fields',  Object.values(data.custom_fields||{}).filter(Boolean).length + ' ready'],
+  ];
+  grid.innerHTML = items.map(([l,v]) => `
+    <div class="result-item">
+      <div class="result-label">${l}</div>
+      <div class="result-val mono">${v||'—'}</div>
+    </div>`).join('');
+
+  // Manual steps
+  const manualWrap = document.getElementById('manual-steps-wrap');
+  const manualList = document.getElementById('manual-steps-list');
+  if (data.manual_steps?.length) {
+    manualWrap.style.display = 'block';
+    manualList.innerHTML = data.manual_steps.map(s => `
+      <div class="manual-item">
+        <div class="manual-num">${s.step}</div>
+        <div>
+          <div class="manual-title">${s.title}</div>
+          <div class="manual-how">${s.how}</div>
+        </div>
+      </div>`).join('');
+  }
+
+  // JSON tab
+  const safeData = { ...data };
+  delete safeData.log;
+  document.getElementById('json-out').value = JSON.stringify(safeData, null, 2);
+
+  // Templates tab
+  const tmplList = document.getElementById('template-list');
+  let tmplHtml = '';
+  const sms   = data.sms_templates   || {};
+  const email = data.email_templates || {};
+  Object.entries(sms).forEach(([key, t]) => {
+    if (!t?.body) return;
+    tmplHtml += `
+      <div class="tmpl-card">
+        <div class="tmpl-name">${t.name || key}</div>
+        <span class="tmpl-type tmpl-sms">SMS</span>
+        <div class="tmpl-body">${t.body}</div>
+        <button class="copy-btn" onclick="copyText(${JSON.stringify(t.body)})">Copy body</button>
+      </div>`;
+  });
+  Object.entries(email).forEach(([key, t]) => {
+    if (!t?.subject) return;
+    tmplHtml += `
+      <div class="tmpl-card">
+        <div class="tmpl-name">${t.name || key}</div>
+        <span class="tmpl-type tmpl-email">Email</span>
+        <div class="tmpl-body">Subject: ${t.subject}</div>
+        <button class="copy-btn" onclick="copyText(${JSON.stringify(t.subject)})">Copy subject</button>
+      </div>`;
+  });
+  tmplList.innerHTML = tmplHtml || '<div style="font-size:12px;color:var(--muted)">No templates in output.</div>';
+
+  // Workflow tab
+  const wfList  = document.getElementById('workflow-steps-list');
+  const wfSteps = data.workflow_manual?.steps || [];
+  const chanClass = { SMS:'ch-sms', Email:'ch-email', Task:'ch-task', Action:'ch-action' };
+  wfList.innerHTML = wfSteps.length
+    ? wfSteps.map((s, i) => `
+      <div class="wf-step">
+        <div class="wf-num">${i+1}</div>
+        <div class="wf-delay">${s.delay}</div>
+        <div>
+          <span class="wf-channel ${chanClass[s.channel]||'ch-action'}">${s.channel}</span>
+          ${s.template ? `<span class="wf-detail">${s.template}</span>` : ''}
+          <div class="wf-note">${s.note}</div>
+        </div>
+      </div>`).join('')
+    : '<div style="font-size:12px;color:var(--muted)">No workflow definition in output.</div>';
+
   document.getElementById('result-wrap').classList.add('show');
 }
 
-function copyJson() {
-  const ta = document.getElementById('json-out');
-  ta.select();
-  document.execCommand('copy');
-  const btn = event.target.closest('button');
-  btn.textContent = '✓ Copied';
-  setTimeout(() => btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M2 8V2h6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg> Copy JSON`, 2000);
-}
-
+// ── Provision ─────────────────────────────────────────────
 async function runProvision() {
   const secret     = document.getElementById('secret').value.trim();
   const apiKey     = document.getElementById('apiKey').value.trim();
@@ -287,10 +437,11 @@ async function runProvision() {
   const btn = document.getElementById('provision-btn');
   btn.disabled    = true;
   btn.textContent = 'Provisioning...';
-
-  document.getElementById('log-lines').innerHTML = '';
+  document.getElementById('log-lines').innerHTML  = '';
   document.getElementById('log-wrap').classList.remove('show');
   document.getElementById('result-wrap').classList.remove('show');
+  document.getElementById('manual-steps-wrap').style.display = 'none';
+  showTab('json');
 
   addLog('── Starting provisioner...');
 
@@ -311,24 +462,22 @@ async function runProvision() {
           colorAccent:  document.getElementById('colorAccent').value.replace('#',''),
           resultsUrl:   document.getElementById('resultsUrl').value.trim(),
           workerUrl:    document.getElementById('workerUrl').value.trim(),
+          snapshotId:   document.getElementById('snapshotId').value.trim() || null,
         },
       }),
     });
 
     const data = await res.json();
-
-    // Replay server logs
     if (data.log) data.log.forEach(l => addLog(l));
 
     if (data.ok) {
       addLog('── Complete.');
       showResult(data);
     } else {
-      addLog('FATAL: ' + (data.error || 'Unknown error'), 'err');
+      addLog('FATAL: ' + (data.error || 'Unknown error'));
     }
-
   } catch(e) {
-    addLog('ERROR: ' + e.message, 'err');
+    addLog('ERROR: ' + e.message);
   }
 
   btn.disabled    = false;
