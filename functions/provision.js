@@ -1,75 +1,47 @@
 /**
- * Netlify Function: provision.js
- * POST /.netlify/functions/provision
- *
- * Body: { secret, locationId, apiKey, brand }
- * - secret:     matches UPFROG_SECRET env var (gate-keeps the endpoint)
- * - locationId: GHL location ID
- * - apiKey:     location private integration key (sent from browser, never logged)
- * - brand:      { name, phone, slug, vertical, colorPrimary, colorAccent, resultsUrl, workerUrl }
- *
- * Returns: non-sensitive config JSON (IDs only, no keys)
+ * Upfrog GHL Provisioner — Netlify Function
+ * Each step runs independently. One failure never stops the others.
+ * Every step logs ✓ success or ⚠ failure with the reason.
  */
-
 export const handler = async function(event) {
-  const req = {
-    method:  event.httpMethod,
-    json:    () => Promise.resolve(JSON.parse(event.body || '{}')),
-  };
-  // ── CORS headers ──────────────────────────────────────────
   const headers = {
     'Access-Control-Allow-Origin':  '*',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Content-Type': 'application/json',
   };
-
   const respond = (body, status = 200) => ({
-    statusCode: status,
-    headers,
-    body: JSON.stringify(body),
+    statusCode: status, headers, body: JSON.stringify(body),
   });
 
-  if (req.method === 'OPTIONS') {
-    return { statusCode: 204, headers, body: '' };
-  }
-  if (req.method !== 'POST') {
-    return respond({ error: 'Method not allowed' }, 405);
-  }
+  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
+  if (event.httpMethod !== 'POST')   return respond({ error: 'Method not allowed' }, 405);
 
-  // ── Parse + validate body ─────────────────────────────────
   let body;
-  try {
-    body = await req.json();
-  } catch {
-    return respond({ error: 'Invalid JSON body' }, 400);
-  }
+  try { body = JSON.parse(event.body || '{}'); }
+  catch { return respond({ error: 'Invalid JSON' }, 400); }
 
   const { secret, locationId, apiKey, brand = {} } = body;
 
-  // Gate — check secret matches env var
-  const UPFROG_SECRET = process.env.UPFROG_SECRET;
-  if (!UPFROG_SECRET || secret !== UPFROG_SECRET) {
+  if (!process.env.UPFROG_SECRET || secret !== process.env.UPFROG_SECRET)
     return respond({ error: 'Unauthorized' }, 401);
-  }
+  if (!locationId || !apiKey)
+    return respond({ error: 'locationId and apiKey required' }, 400);
 
-  if (!locationId || !apiKey) {
-    return respond({ error: 'locationId and apiKey are required' }, 400);
-  }
+  // ── Brand config ─────────────────────────────────────────
+  const B = {
+    name:    brand.name         || 'Upfrog Brand',
+    phone:   brand.phone        || '',
+    slug:    brand.slug         || 'brand',
+    vert:    brand.vertical     || 'windows',
+    primary: brand.colorPrimary || '0e2a47',
+    accent:  brand.colorAccent  || '3a9bd5',
+    results: brand.resultsUrl   || '',
+    worker:  brand.workerUrl    || '',
+  };
 
-  // ── Destructure brand config ──────────────────────────────
-  const BRAND_NAME     = brand.name         || 'Upfrog Brand';
-  const BRAND_PHONE    = brand.phone        || '';
-  const BRAND_SLUG     = brand.slug         || 'brand';
-  const BRAND_VERTICAL = brand.vertical     || 'windows';
-  const COLOR_PRIMARY  = brand.colorPrimary || '0e2a47';
-  const COLOR_ACCENT   = brand.colorAccent  || '3a9bd5';
-  const RESULTS_URL    = brand.resultsUrl   || '';
-  const WORKER_URL     = brand.workerUrl    || 'https://upfrog-proxy.shiny-poetry-341c.workers.dev';
-
-  // ── GHL API helper ────────────────────────────────────────
-  const BASE = 'https://services.leadconnectorhq.com';
-  async function ghl(method, path, bodyData = null) {
+  // ── GHL fetch helper ─────────────────────────────────────
+  async function ghl(method, path, data = null) {
     const opts = {
       method,
       headers: {
@@ -78,28 +50,42 @@ export const handler = async function(event) {
         'Version':       '2021-07-28',
       },
     };
-    if (bodyData) opts.body = JSON.stringify(bodyData);
-    const res  = await fetch(`${BASE}${path}`, opts);
+    if (data) opts.body = JSON.stringify(data);
+    const res  = await fetch(`https://services.leadconnectorhq.com${path}`, opts);
     const text = await res.text();
-    if (!res.ok) {
-      let detail = text;
-      try { detail = JSON.parse(text); } catch {}
-      throw new Error(`GHL ${method} ${path} → ${res.status}: ${JSON.stringify(detail).slice(0, 200)}`);
-    }
-    try { return JSON.parse(text); } catch { return { raw: text }; }
+    let json;
+    try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    if (!res.ok) throw new Error(`${res.status}: ${JSON.stringify(json).slice(0, 250)}`);
+    return json;
   }
 
-  // ── Result object (safe — never contains keys) ────────────
+  // ── Step runner — each step isolated, never throws ───────
+  // Returns { ok, data, error }
+  async function step(name, fn) {
+    result.log.push(`── ${name}`);
+    try {
+      const data = await fn();
+      result.log.push(`✓ ${name}`);
+      return { ok: true, data };
+    } catch(e) {
+      result.log.push(`⚠ ${name}: ${e.message}`);
+      result.steps_failed.push(name);
+      return { ok: false, error: e.message };
+    }
+  }
+
+  // ── Result object ────────────────────────────────────────
   const result = {
-    ok:             true,
+    ok: true,
     location_id:    locationId,
-    brand_slug:     BRAND_SLUG,
-    brand_name:     BRAND_NAME,
-    brand_phone:    BRAND_PHONE,
-    brand_vertical: BRAND_VERTICAL,
-    colors:         { primary: COLOR_PRIMARY, accent: COLOR_ACCENT },
-    results_url:    RESULTS_URL,
-    worker_url:     WORKER_URL,
+    location_name:  null,
+    brand_slug:     B.slug,
+    brand_name:     B.name,
+    brand_phone:    B.phone,
+    brand_vertical: B.vert,
+    colors:         { primary: B.primary, accent: B.accent },
+    results_url:    B.results,
+    worker_url:     B.worker,
     custom_fields:  {},
     pipeline_id:    null,
     pipeline_stages:{},
@@ -111,285 +97,286 @@ export const handler = async function(event) {
     workflow_id:    null,
     sms_templates:  {},
     email_templates:{},
+    steps_failed:   [],
     provisioned_at: new Date().toISOString(),
     log:            [],
   };
 
-  const log = (msg) => result.log.push(msg);
+  // ════════════════════════════════════════════════════════
+  // STEP 1 — Verify location access
+  // ════════════════════════════════════════════════════════
+  const verifyResult = await step('Verify location', async () => {
+    const r = await ghl('GET', `/locations/${locationId}`);
+    result.location_name = r.location?.name || r.name;
+    return r;
+  });
 
-  try {
-    // ── 1. Verify location ──────────────────────────────────
-    log('Verifying location access...');
-    const loc = await ghl('GET', `/locations/${locationId}`);
-    result.location_name = loc.location?.name || loc.name;
-    log(`✓ Connected: ${result.location_name}`);
-
-    // ── 2. Custom fields ────────────────────────────────────
-    log('Creating custom fields...');
-    const FIELDS = [
-      { key: 'price_good',       label: 'Price — Good tier',       dataType: 'TEXT'  },
-      { key: 'price_better',     label: 'Price — Better tier',     dataType: 'TEXT'  },
-      { key: 'price_best',       label: 'Price — Best tier',       dataType: 'TEXT'  },
-      { key: 'price_per_window', label: 'Price — Per window',      dataType: 'TEXT'  },
-      { key: 'window_count',     label: 'Window count',            dataType: 'NUMERICAL' },
-      { key: 'year_built',       label: 'Year built',              dataType: 'NUMERICAL' },
-      { key: 'sqft',             label: 'Square footage',          dataType: 'NUMERICAL' },
-      { key: 'stories',          label: 'Stories',                 dataType: 'NUMERICAL' },
-      { key: 'install_type',     label: 'Install type',            dataType: 'TEXT'      },
-      { key: 'glass_package',    label: 'Glass package',           dataType: 'TEXT'      },
-      { key: 'window_types',     label: 'Window types selected',   dataType: 'TEXT'      },
-      { key: 'addon_list',       label: 'Add-ons selected',        dataType: 'TEXT'      },
-      { key: 'addon_total',      label: 'Add-on total',            dataType: 'TEXT'      },
-      { key: 'lead_paint_flag',  label: 'Lead paint flag',         dataType: 'TEXT'      },
-      { key: 'bay_bow_detected', label: 'Bay/bow detected',        dataType: 'TEXT'      },
-      { key: 'lead_source',      label: 'Lead source',             dataType: 'TEXT'      },
-      { key: 'analysis_path',    label: 'Analysis path',           dataType: 'TEXT'      },
-      { key: 'property_address', label: 'Property address',        dataType: 'TEXT'      },
-      { key: 'estimate_url',     label: 'Estimate URL',            dataType: 'TEXT'      },
-      { key: 'tcpa_consent',     label: 'TCPA consent',            dataType: 'TEXT'      },
-    ];
-
-    let existingFields = [];
-    try {
-      const ef = await ghl('GET', `/locations/${locationId}/customFields`);
-      existingFields = ef.customFields || ef.fields || [];
-    } catch {}
-
-    for (const field of FIELDS) {
-      const exists = existingFields.find(f =>
-        f.fieldKey?.includes(field.key) || f.name === field.label
-      );
-      if (exists) {
-        result.custom_fields[field.key] = exists.id;
-      } else {
-        try {
-          const r = await ghl('POST', `/locations/${locationId}/customFields`, {
-            name: field.label, dataType: field.dataType, model: 'contact',
-          });
-          result.custom_fields[field.key] = r.customField?.id || r.id;
-        } catch { result.custom_fields[field.key] = null; }
-      }
-    }
-    log(`✓ ${Object.keys(result.custom_fields).length} custom fields ready`);
-
-    // ── 3. Pipeline ─────────────────────────────────────────
-    log('Creating pipeline...');
-    const PIPELINE_NAME = `${BRAND_NAME} — ${BRAND_VERTICAL === 'windows' ? 'Window' : 'Lawn'} Leads`;
-    try {
-      const ep = await ghl('GET', `/opportunities/pipelines?locationId=${locationId}`);
-      const found = (ep.pipelines || []).find(p => p.name === PIPELINE_NAME);
-      if (found) {
-        result.pipeline_id = found.id;
-        (found.stages || []).forEach(s => { result.pipeline_stages[s.name] = s.id; });
-        log(`✓ Pipeline exists: ${PIPELINE_NAME}`);
-      } else {
-        const stages = ['New Lead','Estimate Viewed','Eval Booked','Eval Completed','Closed Won','Closed Lost'];
-        const pr = await ghl('POST', `/opportunities/pipelines`, {
-          locationId,
-          name: PIPELINE_NAME,
-          stages: stages.map((name, i) => ({ name, position: i })),
-        });
-        result.pipeline_id = pr.pipeline?.id || pr.id;
-        (pr.pipeline?.stages || []).forEach(s => { result.pipeline_stages[s.name] = s.id; });
-        log(`✓ Pipeline created: ${PIPELINE_NAME}`);
-      }
-    } catch(e) { log(`⚠ Pipeline: ${e.message}`); }
-
-    // ── 4. Tag ──────────────────────────────────────────────
-    log('Creating tag...');
-    const TAG_NAME = `${BRAND_VERTICAL === 'windows' ? 'Window' : 'Lawn'} Lead`;
-    result.tag_name = TAG_NAME;
-    try {
-      const tr = await ghl('POST', `/locations/${locationId}/tags`, { name: TAG_NAME });
-      result.tag_id = tr.tag?.id || tr.id;
-      log(`✓ Tag: "${TAG_NAME}"`);
-    } catch(e) {
-      log(`· Tag "${TAG_NAME}" may already exist — continuing`);
-    }
-
-    // ── 5. SMS Templates ────────────────────────────────────
-    log('Creating SMS templates...');
-    const SMS = [
-      { key: 'instant',    name: `[${BRAND_SLUG}] Instant`,    body: `Hi {{contact.first_name}}, your ${BRAND_NAME} estimate is ready! View your Good/Better/Best pricing and book your free in-home eval: {{contact.estimate_url}} — Reply STOP to opt out` },
-      { key: 'nudge_1hr',  name: `[${BRAND_SLUG}] 1hr nudge`,  body: `Still thinking it over, {{contact.first_name}}? Your estimate expires tonight. Book your free eval — no pressure: {{contact.estimate_url}} · ${BRAND_PHONE}` },
-      { key: 'day2_fin',   name: `[${BRAND_SLUG}] Day2 fin`,   body: `{{contact.first_name}}, new windows can be as low as $89/mo with 0% interest for 18 months. See options: {{contact.estimate_url}} · ${BRAND_NAME}` },
-      { key: 'day5_value', name: `[${BRAND_SLUG}] Day5 value`, body: `Quick question, {{contact.first_name}} — are your windows drafty this time of year? New windows cut energy bills 15-25%. Your estimate is still saved: {{contact.estimate_url}}` },
-      { key: 'day7_close', name: `[${BRAND_SLUG}] Day7 close`, body: `Last chance, {{contact.first_name}} — we're holding your ${BRAND_NAME} estimate price through this weekend. Book before Sunday and get free screens on every window. ${BRAND_PHONE}` },
-    ];
-    for (const t of SMS) {
-      try {
-        const r = await ghl('POST', `/locations/${locationId}/templates`, { name: t.name, type: 'sms', body: t.body });
-        result.sms_templates[t.key] = r.template?.id || r.id || r._id || Object.values(r).find(v => typeof v === 'string' && v.length > 10) || null;
-        log(`✓ SMS: ${t.name} → ${result.sms_templates[t.key]}`);
-      } catch(e) { 
-        log(`⚠ SMS "${t.name}": ${e.message}`);
-        result.sms_templates[t.key] = null; 
-      }
-    }
-    log(`✓ ${Object.keys(result.sms_templates).length} SMS templates`);
-
-    // ── 6. Email templates ──────────────────────────────────
-    log('Creating email templates...');
-
-    const emailHtml = (fname, price, url, brand, phone, accent) => `
-<!DOCTYPE html><html><body style="margin:0;padding:0;background:#f5f9fc;font-family:Arial,sans-serif">
-<div style="max-width:580px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #d1e0ed">
-  <div style="background:#${accent};padding:28px 24px;text-align:center">
-    <h1 style="color:#fff;margin:0;font-size:22px;font-weight:700">${brand}</h1>
-    <p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:14px">Your window estimate is ready</p>
-  </div>
-  <div style="padding:32px 28px">
-    <p style="font-size:16px;color:#111;margin:0 0 16px">Hi {{contact.first_name}},</p>
-    <p style="color:#374151;line-height:1.6;margin:0 0 24px">Your personalized window estimate is still waiting. We've prepared <strong>Good, Better, and Best</strong> options based on your home — most homeowners choose the Better package.</p>
-    <div style="background:#f0f8ff;border-radius:10px;padding:24px;text-align:center;margin:0 0 24px">
-      <p style="margin:0 0 6px;font-size:13px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">Better package estimate</p>
-      <p style="margin:0;font-size:36px;font-weight:700;color:#0e2a47;letter-spacing:-1px">{{contact.price_better}}</p>
-      <p style="margin:6px 0 0;font-size:13px;color:#6b7280">installed · {{contact.window_count}} windows · Low-E + argon</p>
-    </div>
-    <p style="color:#374151;line-height:1.6;margin:0 0 28px">Your free in-home evaluation takes 30 minutes. A specialist visits, confirms measurements, answers every question, and gives you a final locked-in price. <strong>Zero obligation.</strong></p>
-    <div style="text-align:center;margin:0 0 28px">
-      <a href="{{contact.estimate_url}}" style="display:inline-block;background:#${accent};color:#fff;text-decoration:none;padding:16px 32px;border-radius:10px;font-weight:700;font-size:16px">Book My Free In-Home Eval</a>
-    </div>
-    <div style="border-top:1px solid #e5e7eb;padding-top:20px;display:flex;gap:20px;justify-content:center;flex-wrap:wrap">
-      <div style="text-align:center"><div style="font-size:20px;font-weight:700;color:#0e2a47">4.9★</div><div style="font-size:11px;color:#9ca3af">312 reviews</div></div>
-      <div style="text-align:center"><div style="font-size:20px;font-weight:700;color:#0e2a47">A+</div><div style="font-size:11px;color:#9ca3af">BBB rating</div></div>
-      <div style="text-align:center"><div style="font-size:20px;font-weight:700;color:#0e2a47">1-day</div><div style="font-size:11px;color:#9ca3af">install</div></div>
-      <div style="text-align:center"><div style="font-size:20px;font-weight:700;color:#0e2a47">Lifetime</div><div style="font-size:11px;color:#9ca3af">warranty</div></div>
-    </div>
-  </div>
-  <div style="background:#f9fafb;padding:16px 28px;text-align:center;border-top:1px solid #e5e7eb">
-    <p style="font-size:11px;color:#9ca3af;margin:0">${brand} · ${phone} · <a href="{{contact.estimate_url}}" style="color:#6b7280">View estimate</a></p>
-  </div>
-</div>
-</body></html>`;
-
-    const EMAILS = [
-      {
-        key:     'day1_recap',
-        name:    `[${BRAND_SLUG}] Day1 — Estimate recap`,
-        subject: `Your ${BRAND_NAME} estimate — 3 options ready`,
-        html:    emailHtml(null, null, null, BRAND_NAME, BRAND_PHONE, COLOR_ACCENT),
-      },
-      {
-        key:     'day3_objection',
-        name:    `[${BRAND_SLUG}] Day3 — Objection handler`,
-        subject: `"Is it really worth it?" — honest answer from ${BRAND_NAME}`,
-        html:    `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
-          <h2 style="color:#0e2a47">The 3 questions we hear most</h2>
-          <p><strong>"Can I wait another year?"</strong><br>You can — but every winter with drafty windows costs you in heating bills. Most homeowners say they wished they'd done it sooner.</p>
-          <p><strong>"Is the price firm?"</strong><br>Your estimate is based on your actual home data. The in-home eval confirms measurements and locks your price — no surprises at install.</p>
-          <p><strong>"How long does it take?"</strong><br>Most whole-house jobs finish in a single day. You're home by evening with new windows.</p>
-          <p>Your estimate is still saved. <a href="{{contact.estimate_url}}" style="color:#3a9bd5;font-weight:700">View it here</a> or call us at ${BRAND_PHONE}.</p>
-          <p style="font-size:12px;color:#9ca3af">${BRAND_NAME}</p></div>`,
-      },
-      {
-        key:     'day7_close',
-        name:    `[${BRAND_SLUG}] Day7 — Final offer`,
-        subject: `Last chance: your ${BRAND_NAME} estimate price expires Sunday`,
-        html:    `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
-          <h2 style="color:#0e2a47">We're holding your price through Sunday</h2>
-          <p>Hi {{contact.first_name}},</p>
-          <p>Material costs fluctuate — we've been holding your estimate price for a week, but we can only guarantee it through this Sunday.</p>
-          <p>Book your free in-home eval before Sunday and we'll add <strong>free upgraded screens on every window</strong> — normally $30/window.</p>
-          <div style="text-align:center;margin:28px 0">
-            <a href="{{contact.estimate_url}}" style="background:#3a9bd5;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:700;display:inline-block">Claim My Free Screens</a>
-          </div>
-          <p style="font-size:12px;color:#9ca3af">${BRAND_NAME} · ${BRAND_PHONE}</p></div>`,
-      },
-    ];
-
-    for (const t of EMAILS) {
-      try {
-        const r = await ghl('POST', `/locations/${locationId}/templates`, {
-          name: t.name, type: 'email', subject: t.subject, body: t.html,
-        });
-        result.email_templates[t.key] = r.template?.id || r.id || r._id || Object.values(r).find(v => typeof v === 'string' && v.length > 10) || null;
-        log(`✓ Email: ${t.name} → ${result.email_templates[t.key]}`);
-      } catch(e) { 
-        log(`⚠ Email "${t.name}": ${e.message}`);
-        result.email_templates[t.key] = null; 
-      }
-    }
-    log(`✓ ${Object.keys(result.email_templates).length} email templates`);
-
-    // ── 7. Calendar ─────────────────────────────────────────
-    log('Creating calendar...');
-    try {
-      const cr = await ghl('POST', `/calendars/`, {
-        locationId,
-        name:         `${BRAND_NAME} — Free In-Home Eval`,
-        description:  'Free 30-min in-home window evaluation. No obligation.',
-        slotDuration: 30,
-        slotInterval: 30,
-        isActive:     true,
-      });
-      result.calendar_id    = cr.calendar?.id || cr.id;
-      result.calendar_embed = `https://api.leadconnectorhq.com/widget/booking/${result.calendar_id}`;
-      log(`✓ Calendar created`);
-    } catch(e) { log(`⚠ Calendar: ${e.message}`); }
-
-    // ── 8. Webhook URL ──────────────────────────────────────
-    try {
-      const lr = await ghl('GET', `/locations/${locationId}`);
-      result.webhook_url = lr.location?.settings?.webhookUrl
-        || `https://services.leadconnectorhq.com/hooks/${locationId}/webhook-trigger/`;
-      log(`✓ Webhook URL ready`);
-    } catch {
-      result.webhook_url = `https://services.leadconnectorhq.com/hooks/${locationId}/webhook-trigger/`;
-    }
-
-    // ── 9. Workflow ─────────────────────────────────────────
-    log('Creating follow-up workflow...');
-    const wfName = `[${BRAND_SLUG}] Lead Nurture — Book In-Home Eval`;
-    try {
-      const wfr = await ghl('POST', `/locations/${locationId}/workflows`, {
-        locationId,
-        name:   wfName,
-        status: 'active',
-        trigger: { type: 'TAG_ADDED', filter: { tag: TAG_NAME } },
-        actions: [
-          { type: 'SEND_SMS',    templateId: result.sms_templates.instant,    delayValue: 0,  delayType: 'minutes' },
-          { type: 'WAIT',        delayValue: 1,  delayType: 'hours' },
-          { type: 'IF_ELSE',     condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-            onTrue: [], onFalse: [{ type: 'SEND_SMS', templateId: result.sms_templates.nudge_1hr }] },
-          { type: 'WAIT',        delayValue: 23, delayType: 'hours' },
-          { type: 'SEND_EMAIL',  templateId: result.email_templates.day1_recap },
-          { type: 'WAIT',        delayValue: 2,  delayType: 'days' },
-          { type: 'IF_ELSE',     condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-            onTrue: [], onFalse: [
-              { type: 'SEND_EMAIL', templateId: result.email_templates.day3_objection },
-              { type: 'SEND_SMS',   templateId: result.sms_templates.day2_fin },
-            ]},
-          { type: 'WAIT',        delayValue: 2,  delayType: 'days' },
-          { type: 'IF_ELSE',     condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-            onTrue: [], onFalse: [
-              { type: 'SEND_SMS', templateId: result.sms_templates.day5_value },
-              { type: 'CREATE_TASK', title: `Call {{contact.first_name}} — window estimate`, dueDate: 'now',
-                body: `Estimate: {{contact.price_better}}. Hasn't booked eval. Call and offer to answer questions. ${BRAND_PHONE}` },
-            ]},
-          { type: 'WAIT',        delayValue: 2,  delayType: 'days' },
-          { type: 'IF_ELSE',     condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
-            onTrue: [], onFalse: [
-              { type: 'SEND_EMAIL', templateId: result.email_templates.day7_close },
-              { type: 'SEND_SMS',   templateId: result.sms_templates.day7_close },
-            ]},
-          { type: 'REMOVE_TAG',  tag: TAG_NAME },
-        ],
-      });
-      result.workflow_id   = wfr.workflow?.id || wfr.id;
-      result.workflow_name = wfName;
-      log(`✓ Workflow created: ${wfName}`);
-    } catch(e) {
-      log(`⚠ Workflow API: ${e.message} — definition stored in result for manual import`);
-    }
-
-    log('Provisioning complete.');
-
-  } catch(e) {
+  // If we can't even connect, stop here — nothing else will work
+  if (!verifyResult.ok) {
     result.ok    = false;
-    result.error = e.message;
-    result.log.push(`FATAL: ${e.message}`);
+    result.error = 'Could not connect to GHL location. Check your API key and Location ID.';
+    return respond(result, 500);
   }
 
-  return respond(result, result.ok ? 200 : 500);
-}
+  // ════════════════════════════════════════════════════════
+  // STEP 2 — Custom fields
+  // ════════════════════════════════════════════════════════
+  await step('Custom fields', async () => {
+    const FIELDS = [
+      { key: 'price_good',       label: 'Price Good',       dataType: 'TEXT'      },
+      { key: 'price_better',     label: 'Price Better',     dataType: 'TEXT'      },
+      { key: 'price_best',       label: 'Price Best',       dataType: 'TEXT'      },
+      { key: 'price_per_window', label: 'Price Per Window', dataType: 'TEXT'      },
+      { key: 'window_count',     label: 'Window Count',     dataType: 'NUMERICAL' },
+      { key: 'year_built',       label: 'Year Built',       dataType: 'NUMERICAL' },
+      { key: 'sqft',             label: 'Square Footage',   dataType: 'NUMERICAL' },
+      { key: 'stories',          label: 'Stories',          dataType: 'NUMERICAL' },
+      { key: 'install_type',     label: 'Install Type',     dataType: 'TEXT'      },
+      { key: 'glass_package',    label: 'Glass Package',    dataType: 'TEXT'      },
+      { key: 'window_types',     label: 'Window Types',     dataType: 'TEXT'      },
+      { key: 'addon_list',       label: 'Addon List',       dataType: 'TEXT'      },
+      { key: 'addon_total',      label: 'Addon Total',      dataType: 'TEXT'      },
+      { key: 'lead_paint_flag',  label: 'Lead Paint Flag',  dataType: 'TEXT'      },
+      { key: 'bay_bow_detected', label: 'Bay Bow Detected', dataType: 'TEXT'      },
+      { key: 'lead_source',      label: 'Lead Source',      dataType: 'TEXT'      },
+      { key: 'analysis_path',    label: 'Analysis Path',    dataType: 'TEXT'      },
+      { key: 'property_address', label: 'Property Address', dataType: 'TEXT'      },
+      { key: 'estimate_url',     label: 'Estimate URL',     dataType: 'TEXT'      },
+      { key: 'tcpa_consent',     label: 'TCPA Consent',     dataType: 'TEXT'      },
+    ];
+
+    // Fetch existing to avoid duplicates
+    let existing = [];
+    try {
+      const ef = await ghl('GET', `/locations/${locationId}/customFields`);
+      existing = ef.customFields || ef.fields || [];
+    } catch {}
+
+    // Create each field independently
+    for (const f of FIELDS) {
+      const found = existing.find(e => e.name === f.label || e.fieldKey?.includes(f.key));
+      if (found) {
+        result.custom_fields[f.key] = found.id;
+        result.log.push(`  · ${f.label}: exists (${found.id})`);
+        continue;
+      }
+      try {
+        const r = await ghl('POST', `/locations/${locationId}/customFields`, {
+          name: f.label, dataType: f.dataType, model: 'contact',
+        });
+        result.custom_fields[f.key] = r.customField?.id || r.id || null;
+        result.log.push(`  ✓ ${f.label}: ${result.custom_fields[f.key]}`);
+      } catch(e) {
+        result.custom_fields[f.key] = null;
+        result.log.push(`  ⚠ ${f.label}: ${e.message.slice(0, 80)}`);
+      }
+    }
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 3 — Pipeline
+  // ════════════════════════════════════════════════════════
+  await step('Pipeline', async () => {
+    const name = `${B.name} — ${B.vert === 'windows' ? 'Window' : 'Lawn'} Leads`;
+    const ep   = await ghl('GET', `/opportunities/pipelines?locationId=${locationId}`);
+    const found = (ep.pipelines || []).find(p => p.name === name);
+    if (found) {
+      result.pipeline_id = found.id;
+      (found.stages || []).forEach(s => { result.pipeline_stages[s.name] = s.id; });
+      result.log.push(`  · Already exists: ${result.pipeline_id}`);
+      return;
+    }
+    const pr = await ghl('POST', `/opportunities/pipelines`, {
+      locationId, name,
+      stages: ['New Lead','Estimate Viewed','Eval Booked','Eval Completed','Closed Won','Closed Lost']
+              .map((n, i) => ({ name: n, position: i })),
+    });
+    result.pipeline_id = pr.pipeline?.id || pr.id;
+    (pr.pipeline?.stages || []).forEach(s => { result.pipeline_stages[s.name] = s.id; });
+    result.log.push(`  · ID: ${result.pipeline_id}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 4 — Tag
+  // ════════════════════════════════════════════════════════
+  const TAG_NAME = `${B.vert === 'windows' ? 'Window' : 'Lawn'} Lead`;
+  result.tag_name = TAG_NAME;
+
+  await step('Tag', async () => {
+    const r = await ghl('POST', `/locations/${locationId}/tags`, { name: TAG_NAME });
+    result.tag_id = r.tag?.id || r.id || null;
+    result.log.push(`  · ID: ${result.tag_id}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 5 — SMS templates (each one independent)
+  // ════════════════════════════════════════════════════════
+  const SMS_LIST = [
+    { key: 'instant',    name: `[${B.slug}] Instant`,
+      body: `Hi {{contact.first_name}}, your ${B.name} estimate is ready! View pricing + book your free in-home eval: {{contact.estimate_url}} — Reply STOP to opt out` },
+    { key: 'nudge_1hr',  name: `[${B.slug}] 1hr nudge`,
+      body: `Still thinking, {{contact.first_name}}? Your estimate expires tonight. Book free eval: {{contact.estimate_url}} · ${B.phone}` },
+    { key: 'day2_fin',   name: `[${B.slug}] Day2 financing`,
+      body: `{{contact.first_name}}, new windows from $89/mo — 0% interest 18 months. See options: {{contact.estimate_url}} · ${B.name}` },
+    { key: 'day5_value', name: `[${B.slug}] Day5 value`,
+      body: `Are your windows drafty, {{contact.first_name}}? New windows cut energy bills 15-25%. Your estimate: {{contact.estimate_url}}` },
+    { key: 'day7_close', name: `[${B.slug}] Day7 close`,
+      body: `Last chance {{contact.first_name}} — holding your price through Sunday + free screens on every window. ${B.phone}` },
+  ];
+
+  for (const t of SMS_LIST) {
+    await step(`SMS: ${t.key}`, async () => {
+      const r = await ghl('POST', `/locations/${locationId}/templates`, {
+        name: t.name, type: 'sms', body: t.body,
+      });
+      // Log every key in the response so we can see the shape
+      result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
+      result.sms_templates[t.key] = r.template?.id || r.id || r._id || r.templateId || null;
+      result.log.push(`  · ID: ${result.sms_templates[t.key]}`);
+    });
+  }
+
+  // ════════════════════════════════════════════════════════
+  // STEP 6 — Email templates (each one independent)
+  // ════════════════════════════════════════════════════════
+  const EMAIL_BASE = `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif">
+<div style="background:#${B.accent};padding:24px;text-align:center">
+  <h1 style="color:#fff;margin:0;font-size:22px">${B.name}</h1>
+</div>
+<div style="padding:28px">
+  <p style="font-size:16px">Hi {{contact.first_name}},</p>
+  <p>Your window estimate is still waiting. We prepared Good, Better, and Best options for your home.</p>
+  <div style="background:#f0f8ff;border-radius:8px;padding:20px;text-align:center;margin:20px 0">
+    <p style="margin:0 0 4px;font-size:12px;color:#6b7280">Better package</p>
+    <p style="margin:0;font-size:32px;font-weight:700;color:#0e2a47">{{contact.price_better}}</p>
+    <p style="margin:4px 0 0;font-size:12px;color:#6b7280">{{contact.window_count}} windows installed</p>
+  </div>
+  <p>Free in-home eval — 30 minutes, zero obligation.</p>
+  <div style="text-align:center;margin:24px 0">
+    <a href="{{contact.estimate_url}}" style="background:#${B.accent};color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block">Book My Free Eval</a>
+  </div>
+  <p style="font-size:11px;color:#9ca3af">${B.name} · ${B.phone}</p>
+</div></div>`;
+
+  const EMAIL_LIST = [
+    { key: 'day1_recap',
+      name: `[${B.slug}] Day1 recap`,
+      subject: `Your ${B.name} estimate — 3 options ready`,
+      html: EMAIL_BASE },
+    { key: 'day3_objection',
+      name: `[${B.slug}] Day3 objection`,
+      subject: `"Is it really worth it?" — honest answer`,
+      html: `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
+<h2 style="color:#0e2a47">The 3 questions we hear most</h2>
+<p><strong>"Can I wait another year?"</strong><br>Every winter with drafty windows costs more in heating bills. Most say they wished they'd done it sooner.</p>
+<p><strong>"Is the price firm?"</strong><br>The eval confirms measurements and locks your price — no surprises at install.</p>
+<p><strong>"How long does it take?"</strong><br>Most whole-house jobs finish in a single day.</p>
+<p>Your estimate is still saved. <a href="{{contact.estimate_url}}" style="color:#${B.accent};font-weight:700">View it here</a> or call ${B.phone}.</p>
+</div>` },
+    { key: 'day7_close',
+      name: `[${B.slug}] Day7 close`,
+      subject: `Last chance — estimate price expires Sunday`,
+      html: `<div style="max-width:580px;margin:32px auto;font-family:Arial,sans-serif;color:#374151;line-height:1.7">
+<h2 style="color:#0e2a47">We're holding your price through Sunday</h2>
+<p>Book before Sunday and we'll add free upgraded screens on every window.</p>
+<div style="text-align:center;margin:24px 0">
+  <a href="{{contact.estimate_url}}" style="background:#${B.accent};color:#fff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;display:inline-block">Claim My Free Screens</a>
+</div>
+<p style="font-size:11px;color:#9ca3af">${B.name} · ${B.phone}</p>
+</div>` },
+  ];
+
+  for (const t of EMAIL_LIST) {
+    await step(`Email: ${t.key}`, async () => {
+      const r = await ghl('POST', `/locations/${locationId}/templates`, {
+        name: t.name, type: 'email', subject: t.subject, body: t.html,
+      });
+      result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
+      result.email_templates[t.key] = r.template?.id || r.id || r._id || r.templateId || null;
+      result.log.push(`  · ID: ${result.email_templates[t.key]}`);
+    });
+  }
+
+  // ════════════════════════════════════════════════════════
+  // STEP 7 — Calendar
+  // ════════════════════════════════════════════════════════
+  await step('Calendar', async () => {
+    const r = await ghl('POST', `/calendars/`, {
+      locationId,
+      name:         `${B.name} — Free In-Home Eval`,
+      description:  'Free 30-min evaluation. No obligation.',
+      slotDuration: 30,
+      slotInterval: 30,
+      isActive:     true,
+    });
+    result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
+    result.calendar_id    = r.calendar?.id || r.id || null;
+    result.calendar_embed = result.calendar_id
+      ? `https://api.leadconnectorhq.com/widget/booking/${result.calendar_id}`
+      : null;
+    result.log.push(`  · ID: ${result.calendar_id}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 8 — Webhook URL
+  // ════════════════════════════════════════════════════════
+  await step('Webhook URL', async () => {
+    const r = await ghl('GET', `/locations/${locationId}`);
+    result.webhook_url = r.location?.settings?.webhookUrl
+      || `https://services.leadconnectorhq.com/hooks/${locationId}/webhook-trigger/`;
+    result.log.push(`  · ${result.webhook_url}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // STEP 9 — Workflow
+  // ════════════════════════════════════════════════════════
+  await step('Workflow', async () => {
+    const r = await ghl('POST', `/locations/${locationId}/workflows`, {
+      name:   `[${B.slug}] Lead Nurture — Book In-Home Eval`,
+      status: 'active',
+      trigger: { type: 'TAG_ADDED', filter: { tag: TAG_NAME } },
+      actions: [
+        { type: 'SEND_SMS',   templateId: result.sms_templates.instant,        delayValue: 0,  delayType: 'minutes' },
+        { type: 'WAIT',       delayValue: 1,  delayType: 'hours' },
+        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
+          onTrue: [], onFalse: [{ type: 'SEND_SMS', templateId: result.sms_templates.nudge_1hr }] },
+        { type: 'WAIT',       delayValue: 23, delayType: 'hours' },
+        { type: 'SEND_EMAIL', templateId: result.email_templates.day1_recap },
+        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
+        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
+          onTrue: [], onFalse: [
+            { type: 'SEND_EMAIL', templateId: result.email_templates.day3_objection },
+            { type: 'SEND_SMS',   templateId: result.sms_templates.day2_fin },
+          ]},
+        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
+        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
+          onTrue: [], onFalse: [
+            { type: 'SEND_SMS',    templateId: result.sms_templates.day5_value },
+            { type: 'CREATE_TASK', title: `Call {{contact.first_name}} — window estimate`,
+              body:  `Estimate: {{contact.price_better}}. Hasn't booked eval.` },
+          ]},
+        { type: 'WAIT',       delayValue: 2,  delayType: 'days' },
+        { type: 'IF_ELSE',    condition: { field: 'appointmentBooked', operator: 'IS_NOT', value: true },
+          onTrue: [], onFalse: [
+            { type: 'SEND_EMAIL', templateId: result.email_templates.day7_close },
+            { type: 'SEND_SMS',   templateId: result.sms_templates.day7_close },
+          ]},
+        { type: 'REMOVE_TAG', tag: TAG_NAME },
+      ],
+    });
+    result.log.push(`  · Response keys: ${Object.keys(r).join(', ')}`);
+    result.workflow_id = r.workflow?.id || r.id || null;
+    result.log.push(`  · ID: ${result.workflow_id}`);
+  });
+
+  // ════════════════════════════════════════════════════════
+  // SUMMARY
+  // ════════════════════════════════════════════════════════
+  const failed  = result.steps_failed.length;
+  const total   = 9;
+  const success = total - failed;
+  result.log.push(`── Complete: ${success}/${total} steps succeeded`);
+  if (failed > 0) result.log.push(`── Failed steps: ${result.steps_failed.join(', ')}`);
+
+  return respond(result);
+};
